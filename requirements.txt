@@ -1,0 +1,14 @@
+# 核心依赖（已在 RX 9060 XT 16GB + Windows + ROCm 7.2.1 实测兼容）
+torch>=2.9.1          # N 卡装 +cu12x 版；A 卡 ROCm Windows 装 +rocm7.2.1 版
+transformers>=4.52.1
+Pillow>=10.0
+pypdfium2>=4.0        # 渲染阶段（batch/render_pages.py 需要）
+reportlab>=4.0        # 重建可检索 PDF（process/uocr_textlayer_pdf.py 需要）
+
+# 可选：OSD 方向校正（拍照歪斜页用），需本机另装 Tesseract-OCR
+#   Windows: https://github.com/tesseract-ocr/tesseract
+#   脚本通过 --tesseract 指路径；缺失则自动跳过 OSD
+#   （Linux/macOS 用包管理器安装即可，如 apt install tesseract-ocr）
+
+# 模型权重（MIT）：百度 Unlimited OCR 2，自行从 ModelScope / HuggingFace 拉取
+#   搜索 "Unlimited OCR 2" / "Unlimited-OCR-2"，本仓库不含权重文件
