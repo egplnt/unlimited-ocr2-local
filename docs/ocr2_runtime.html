@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OCR2 Runtime 说明 · 文心OCR2 / 百度 Unlimited-OCR-2 本地部署运行时全解</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1a1a1a; --muted:#555; --line:#e2e2e2;
+    --accent:#1f6feb; --accent2:#0a9396; --warn:#b00020; --codebg:#f5f6f8;
+    --card:#fafbfc;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+    line-height:1.7;font-size:16px;}
+  .wrap{max-width:920px;margin:0 auto;padding:32px 24px 80px;}
+  h1{font-size:28px;margin:0 0 6px;}
+  .sub{color:var(--muted);margin:0 0 24px;font-size:14px;}
+  h2{font-size:22px;margin:40px 0 12px;padding-bottom:6px;border-bottom:2px solid var(--accent);}
+  h3{font-size:18px;margin:24px 0 8px;color:var(--accent2);}
+  p{margin:10px 0;}
+  code{background:var(--codebg);padding:2px 6px;border-radius:4px;font-family:"SFMono-Regular",Consolas,monospace;font-size:14px;}
+  pre{background:var(--codebg);padding:14px 16px;border-radius:8px;overflow:auto;font-size:13.5px;line-height:1.5;border:1px solid var(--line);}
+  pre code{background:none;padding:0;}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14.5px;}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top;}
+  th{background:var(--card);font-weight:600;}
+  .note{background:#fff8e1;border-left:4px solid #f9a825;padding:10px 14px;margin:14px 0;border-radius:4px;font-size:14.5px;}
+  .warn{background:#fdecea;border-left:4px solid var(--warn);padding:10px 14px;margin:14px 0;border-radius:4px;font-size:14.5px;}
+  .ok{background:#e8f5e9;border-left:4px solid #2e7d32;padding:10px 14px;margin:14px 0;border-radius:4px;font-size:14.5px;}
+  ul,ol{margin:10px 0;padding-left:24px;}
+  li{margin:6px 0;}
+  .toc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:16px 20px;margin:24px 0;}
+  .toc b{display:block;margin-bottom:8px;}
+  .toc a{color:var(--accent);text-decoration:none;}
+  .toc a:hover{text-decoration:underline;}
+  .kpi{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0;}
+  .kpi div{flex:1 1 160px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;}
+  .kpi .n{font-size:22px;font-weight:700;color:var(--accent);}
+  .kpi .l{font-size:13px;color:var(--muted);}
+  svg{display:block;margin:16px auto;max-width:100%;}
+  .foot{margin-top:60px;padding-top:16px;border-top:1px solid var(--line);color:var(--muted);font-size:13px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>OCR2 Runtime 说明</h1>
+  <p class="sub">文心OCR2 = 百度 Unlimited-OCR-2（3B 多模态 VLM，MIT）· 本地部署运行时全解 · 2026-10-31</p>
+
+  <div class="ok">本说明对应已开源仓库 <code>github.com/egplnt/unlimited-ocr2-local</code>（HEAD <code>67e9e3d</code>）。B1 主力批次实测：105 件 / 2538 页全部推理完成，错误 0、退化 0，整批 687.9 分钟（≈11.5h）。</div>
+
+  <div class="toc">
+    <b>目录</b>
+    <a href="#l1">① 模型结构：它到底是什么</a> · <a href="#l2">② 为何选 VLM 而非传统 OCR</a> · <a href="#l3">③ ROCm 坑（A 卡 + Windows）</a> · <a href="#l4">④ 护栏链设计</a> · <a href="#l5">⑤ 怎么迁移到别的卡</a> · <a href="#chk">迁移检查清单</a>
+  </div>
+
+  <h2 id="l1">① 模型结构：它到底是什么</h2>
+
+  <p>一句话：<b>它是一个视觉语言模型（VLM）在做「图像 → 文本」的生成式 OCR</b>，跑在 HuggingFace <code>transformers</code> 上，不是传统的「检测 + 识别」两阶段流水线，也不是 llama.cpp 那种纯文本推理引擎。</p>
+
+  <h3>三方对照</h3>
+  <table>
+    <tr><th>维度</th><th>传统 OCR（Tesseract / PaddleOCR）</th><th>llama.cpp</th><th>OCR2（Unlimited-OCR-2）</th></tr>
+    <tr><td>本质</td><td>检测(文字框)+识别(CRNN)两阶段</td><td>纯文本 GGUF 推理引擎</td><td>多模态 VLM，自回归生成</td></tr>
+    <tr><td>输入</td><td>图像</td><td>文本 token</td><td>图像</td></tr>
+    <tr><td>输出</td><td>字符序列（无语义）</td><td>文本 token</td><td>文本（含 LaTeX 公式片段）</td></tr>
+    <tr><td>公式</td><td>基本无解</td><td>不涉及</td><td>原生输出 <code>\frac</code> / <code>^</code> / <code>$</code></td></tr>
+    <tr><td>加载方式</td><td>轻量二进制</td><td>GGUF + metal/cuda/rocblas 后端</td><td><code>trust_remote_code=True</code> 加载自定义模型代码</td></tr>
+  </table>
+
+  <svg viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="三种 OCR 形态对比">
+    <rect x="10" y="20" width="200" height="180" rx="8" fill="#fafbfc" stroke="#e2e2e2"/>
+    <text x="110" y="46" text-anchor="middle" font-size="14" font-weight="700" fill="#1a1a1a">传统 OCR</text>
+    <rect x="30" y="64" width="160" height="30" rx="4" fill="#e3f2fd" stroke="#1f6feb"/>
+    <text x="110" y="84" text-anchor="middle" font-size="12" fill="#1a1a1a">图像</text>
+    <rect x="30" y="104" width="160" height="30" rx="4" fill="#fff3e0" stroke="#f9a825"/>
+    <text x="110" y="124" text-anchor="middle" font-size="12" fill="#1a1a1a">检测+识别</text>
+    <rect x="30" y="144" width="160" height="30" rx="4" fill="#e8f5e9" stroke="#2e7d32"/>
+    <text x="110" y="164" text-anchor="middle" font-size="12" fill="#1a1a1a">字符序列</text>
+    <text x="110" y="200" text-anchor="middle" font-size="11" fill="#555">无公式</text>
+
+    <rect x="240" y="20" width="200" height="180" rx="8" fill="#fafbfc" stroke="#e2e2e2"/>
+    <text x="340" y="46" text-anchor="middle" font-size="14" font-weight="700" fill="#1a1a1a">llama.cpp</text>
+    <rect x="260" y="64" width="160" height="30" rx="4" fill="#e3f2fd" stroke="#1f6feb"/>
+    <text x="340" y="84" text-anchor="middle" font-size="12" fill="#1a1a1a">文本 token</text>
+    <rect x="260" y="104" width="160" height="30" rx="4" fill="#fff3e0" stroke="#f9a825"/>
+    <text x="340" y="124" text-anchor="middle" font-size="12" fill="#1a1a1a">GGUF 引擎</text>
+    <rect x="260" y="144" width="160" height="30" rx="4" fill="#e8f5e9" stroke="#2e7d32"/>
+    <text x="340" y="164" text-anchor="middle" font-size="12" fill="#1a1a1a">文本 token</text>
+    <text x="340" y="200" text-anchor="middle" font-size="11" fill="#555">不吃图像</text>
+
+    <rect x="470" y="20" width="200" height="180" rx="8" fill="#fafbfc" stroke="#0a9396"/>
+    <text x="570" y="46" text-anchor="middle" font-size="14" font-weight="700" fill="#0a9396">OCR2 (VLM)</text>
+    <rect x="490" y="64" width="160" height="30" rx="4" fill="#e3f2fd" stroke="#1f6feb"/>
+    <text x="570" y="84" text-anchor="middle" font-size="12" fill="#1a1a1a">图像</text>
+    <rect x="490" y="104" width="160" height="30" rx="4" fill="#e0f7fa" stroke="#0a9396"/>
+    <text x="570" y="124" text-anchor="middle" font-size="12" fill="#1a1a1a">VLM 生成</text>
+    <rect x="490" y="144" width="160" height="30" rx="4" fill="#e8f5e9" stroke="#2e7d32"/>
+    <text x="570" y="164" text-anchor="middle" font-size="12" fill="#1a1a1a">文本+LaTeX</text>
+    <text x="570" y="200" text-anchor="middle" font-size="11" fill="#555">公式可搜</text>
+  </svg>
+
+  <div class="note">关键认知：Complexity 不在模型本身，而在「两头」——<b>模型加载</b>（含 A 卡 ROCm 坑）和<b>外圈工程</b>（方向检测、退化护栏、PDF 重建）。模型推理循环本身反而是直白的。</div>
+
+  <h2 id="l2">② 为何选 VLM 而非传统 OCR</h2>
+
+  <p>核心 trade-off：<b>用「慢」换「质量」</b>。生成式逐 token 输出比两阶段识别慢一个量级，但换来三样传统 OCR 给不了的东西：</p>
+  <ul>
+    <li><b>公式原生输出</b>：VLM 直接生成 LaTeX 片段（<code>\frac</code>、<code>^</code>、<code>$</code>）。B1 实测重建出的 PDF 用 pypdf 抽提，能读到 <code>$\overrightarrow{EM}\cdot$</code> 这类公式——这是「公式也可检索」的根。</li>
+    <li><b>版面与语义理解</b>：VLM 把整页当作语义对象理解，对退化页、双栏、扫描噪点更鲁棒，不会像传统 OCR 那样把公式拆成乱码字符。</li>
+    <li><b>可检索文本层质量</b>：输出是自然语言 + 公式的混合文本层，标准 PDF 工具（pypdf）即可提取，不依赖私有格式。</li>
+  </ul>
+  <div class="warn">代价：速度。早期单本冷启动实测 ≈91s/页（含模型冷加载）；B1 整批 2538 页 / 687.9 分钟 ≈16s/页（模型只加载一次，摊销后大幅下降）。若追求纯速度、且内容无公式，传统 OCR 仍更合适。</div>
+
+  <h2 id="l3">③ ROCm 坑（A 卡 + Windows）</h2>
+
+  <div class="kpi">
+    <div><div class="n">RX 9060 XT</div><div class="l">16GB 显存 · A 卡</div></div>
+    <div><div class="n">ROCm 7.2.1</div><div class="l">Windows · 实测可用</div></div>
+    <div><div class="n">shim</div><div class="l">仅 A 卡+ROCm+Win 需要</div></div>
+  </div>
+
+  <p>实测环境：<code>RX 9060 XT 16GB + Windows + ROCm 7.2.1</code>。A 卡在 Windows 上跑 VLM 是大坑，集中在两点：</p>
+  <ul>
+    <li><b>设备枚举 / 分布式初始化</b>：ROCm 在 Windows 上的进程组、device index 行为与 Linux 不同，直接跑会报 device 相关错误。<code>infer/rocm_dist_shim.py</code> 就是为此存在——它<b>仅</b>在「A 卡 + ROCm + Windows」组合下需要，作用是绕过这些初始化坑。N 卡（CUDA）或 Linux 下不需要。</li>
+    <li><b>驱动 / 构建版本对齐</b>：PyTorch 的 ROCm build 必须与系统 ROCm 大版本匹配，否则加载即崩。16GB 显存跑 3B 模型（batch=1 单页）绰绰有余。</li>
+  </ul>
+  <div class="note">迁移经验：同样一张卡，<b>Linux + ROCm 比 Windows + ROCm 稳得多</b>。Windows 下 shim 是必要的；若上 Linux，shim 通常可省。</div>
+
+  <h2 id="l4">④ 护栏链设计（为什么「复杂」不只在两头）</h2>
+
+  <p>让 OCR2 能跑完 2538 页而不被坏页拖垮，靠的是五道护栏，<b>缺任何一道都会让一页吃掉整轮</b>：</p>
+
+  <svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="护栏链">
+    <defs><marker id="ar" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#0a9396"/></marker></defs>
+    <rect x="10" y="70" width="120" height="50" rx="6" fill="#e0f7fa" stroke="#0a9396"/><text x="70" y="100" text-anchor="middle" font-size="12" fill="#1a1a1a">方向检测</text>
+    <rect x="150" y="70" width="120" height="50" rx="6" fill="#e0f7fa" stroke="#0a9396"/><text x="210" y="100" text-anchor="middle" font-size="12" fill="#1a1a1a">退化检出</text>
+    <rect x="290" y="70" width="120" height="50" rx="6" fill="#e0f7fa" stroke="#0a9396"/><text x="350" y="100" text-anchor="middle" font-size="12" fill="#1a1a1a">符号闸门</text>
+    <rect x="430" y="70" width="120" height="50" rx="6" fill="#e0f7fa" stroke="#0a9396"/><text x="490" y="100" text-anchor="middle" font-size="12" fill="#1a1a1a">单页上限</text>
+    <rect x="570" y="70" width="100" height="50" rx="6" fill="#e8f5e9" stroke="#2e7d32"/><text x="620" y="100" text-anchor="middle" font-size="12" fill="#1a1a1a">增量落盘</text>
+    <line x1="130" y1="95" x2="148" y2="95" stroke="#0a9396" marker-end="url(#ar)"/>
+    <line x1="270" y1="95" x2="288" y2="95" stroke="#0a9396" marker-end="url(#ar)"/>
+    <line x1="410" y1="95" x2="428" y2="95" stroke="#0a9396" marker-end="url(#ar)"/>
+    <line x1="550" y1="95" x2="568" y2="95" stroke="#0a9396" marker-end="url(#ar)"/>
+    <text x="340" y="40" text-anchor="middle" font-size="12" fill="#555">逐页通过才写盘 · 失败页隔离不中断整轮</text>
+    <text x="340" y="160" text-anchor="middle" font-size="12" fill="#555">断点续跑：按页续、增量写 → 强制终止零丢失（B1 加装内存已验证）</text>
+  </svg>
+
+  <h3>各护栏的实测参数</h3>
+  <table>
+    <tr><th>护栏</th><th>机制</th><th>实测阈值 / 数据</th></tr>
+    <tr><td>方向检测 OSD</td><td><code>-l osd</code> 显式调用；结果写在 <code>&lt;base&gt;.osd</code> 文件（不在 stdout）；大图先降采样到 1024 再测</td><td>漏写 <code>-l osd</code> 默认 chi_sim 不做方向检测 → 整页颠倒</td></tr>
+    <tr><td>退化检出</td><td>剥标签后最常见 5-gram 字符占比</td><td>阈值 <b>0.5</b>；实测 p12=<b>2.493</b>、第二名 0.119、旧文本最高 0.172</td></tr>
+    <tr><td>页长统计</td><td>正常页输出长度分布</td><td>min <b>629</b> / 中位 <b>2069</b> / max <b>4223</b>（p8）；20030 为离群值=病变本身，可作单页上限取值</td></tr>
+    <tr><td>逐字对齐陷阱</td><td>逐字相同率 0.32 是字符错位效应，非内容变化</td><td>护栏代价必须用 <code>difflib</code>，不能用逐位对齐</td></tr>
+    <tr><td>增量落盘</td><td>每页结果写入 <code>single_results_full.json</code>，按页续跑 <code>if str(i) in done and not error: continue</code></td><td>B1 加内存强杀：11 件完成 + 件12 落盘 15/40 页，全盘零损坏</td></tr>
+    <tr><td>字节级校验</td><td>重建 PDF 后用 pypdf 抽提验证汉字+公式</td><td>idx 88：抽提 828 汉字；件1：抽提 94234 汉字 + LaTeX 片段</td></tr>
+  </table>
+
+  <div class="warn">认知更新：旧判据「符号保真>0 ⇒ 原生文本层」已不适用——OCR2 以 LaTeX 输出公式，不落 MATH_SYM 的 Unicode 符号，旧口径 <code>symbol==0 → L1</code> 会把公式产物误判成 L1。代理指标（字数）不足以判定方向正确性，必须落到最终判据（公式/术语/退化度）复核。</div>
+
+  <h2 id="l5">⑤ 怎么迁移到别的卡</h2>
+
+  <h3>NVIDIA（CUDA）</h3>
+  <ul>
+    <li>最干净：去掉 <code>rocm_dist_shim.py</code>，装 CUDA 版 PyTorch，<code>--device cuda</code>。</li>
+    <li>无 shim、无 Windows ROCm 坑，跑起来基本零摩擦。</li>
+  </ul>
+
+  <h3>其他 A 卡 / Linux</h3>
+  <ul>
+    <li>Linux + ROCm 比 Windows 稳，shim 通常可省；若保留，需确认 shim 适配你的 ROCm 版本。</li>
+    <li>不同 A 卡型号注意显存：3B 模型 batch=1 单页约数 GB，16GB 充裕，8GB 卡需降分辨率或 batch。</li>
+  </ul>
+
+  <h3>CPU fallback</h3>
+  <ul><li>仅用于验证管线连通性，速度极慢（分钟级/页），不当生产用。</li></ul>
+
+  <h3>跨平台去硬编码（已落地在开源仓库）</h3>
+  <ul>
+    <li>所有机器专属绝对路径（<code>E:/uocr_models</code>、<code>E:/uocr_env</code>、<code>C:/Users/lg</code>、<code>C:/Windows/Fonts/simhei.ttf</code> 等）改为 CLI 参数 / 环境变量 / 相对路径。</li>
+    <li>跨平台字体探测 <code>find_cjk_font()</code>：枚举 Windows / Linux / macOS 常见中文字体路径，缺失时明确报错而非静默用错字体。</li>
+    <li><code>--model</code> 改为必填，<code>--tesseract</code> 可配，去全局变量、改参数传递（修掉了 <code>global TESSERACT</code> 的 SyntaxError）。</li>
+  </ul>
+
+  <h2 id="chk">迁移检查清单</h2>
+  <pre><code># 1) 装依赖（按目标后端选 torch）
+pip install -r requirements.txt        # torch/transformers/Pillow/pypdfium2/reportlab
+
+# 2) N 卡：直接 CUDA；A 卡 Windows：保留 rocm_dist_shim；A 卡 Linux：可去 shim
+python infer/uocr_infer.py --model /path/to/Unlimited-OCR-2 --images ./pages --out ./out
+
+# 3) 方向与退化（护栏不可省）
+#    OSD 必须 -l osd，结果在 &lt;base&gt;.osd；退化阈值 0.5
+
+# 4) 重建 PDF（CPU 活，不需 GPU）
+python process/uocr_textlayer_pdf.py --json x.json --images ./pages --output x_可检索.pdf
+
+# 5) 校验（字节级）
+python -c "from pypdf import PdfReader; print(len(PdfReader('x_可检索.pdf').pages))"</code></pre>
+
+  <div class="ok">一句话收尾：Runtime 的复杂度 = 模型加载（A 卡 ROCm 坑）+ 外圈工程（五道护栏）+ 跨平台参数化。模型推理本身直白；难的是让它在 2538 页、各种退化扫描件上「跑得完、不丢页、可检索」。</div>
+
+  <div class="foot">
+    文档对应：<code>github.com/egplnt/unlimited-ocr2-local</code> · 授权 MIT（含百度权重 MIT 声明 + trust_remote_code 安全提示）。本页为 Runtime 专项说明，与「搭桥学习法」方法论母体（CC BY-NC-SA）分仓独立。
+  </div>
+</div>
+</body>
+</html>

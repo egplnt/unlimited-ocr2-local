@@ -87,10 +87,9 @@ python process/uocr_textlayer_pdf.py --json work/01/single_results_full.json --i
 
 ## 延伸阅读
 
+- **Runtime 说明（五层讲透）**：[docs/ocr2_runtime.html](docs/ocr2_runtime.html) —— 模型结构 / 为什么选 VLM 而非传统 OCR / ROCm 坑 / 护栏链设计 / 迁移别的卡，图文版。
 - 知乎长文《RX9060XT 跑通文心 OCR2》：记录本管线在消费级 A 卡 + Windows + ROCm 上的
   完整踩坑与配置细节（runtime 原理、五个坑的展开版）。
-- runtime 深入讲解（模型结构 / 为什么选 VLM 而非传统 OCR / ROCm 坑 / 护栏链设计 / 迁移别的卡）
-  后续单独成文。
 
 ## License
 
